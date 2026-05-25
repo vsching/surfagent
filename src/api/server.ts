@@ -1,13 +1,48 @@
 #!/usr/bin/env node
 
 import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import nodepath from 'node:path';
 import { reconUrl, reconTab } from './recon.js';
 import { fillFields, clickElement, scrollPage, navigatePage, evalInTab, focusTab, readPage, captchaInteract, dismissOverlays, typeKeys, dispatchEvent } from './act.js';
-import { getAllTabs } from '../chrome/tabs.js';
+import { getAllTabs, findTab } from '../chrome/tabs.js';
+import { takeScreenshot } from '../chrome/content.js';
 
 const PORT = parseInt(process.env.API_PORT || '3456', 10);
 const CDP_PORT = parseInt(process.env.CDP_PORT || '9222', 10);
 const CDP_HOST = process.env.CDP_HOST || 'localhost';
+
+// Audit log — JSONL per UTC date under ~/.surfagent/audit/.
+// Disable by setting AUDIT_LOG=off. Override path with SURFAGENT_AUDIT_DIR.
+const AUDIT_ENABLED = (process.env.AUDIT_LOG ?? 'on').toLowerCase() !== 'off';
+const AUDIT_DIR = process.env.SURFAGENT_AUDIT_DIR || nodepath.join(os.homedir(), '.surfagent', 'audit');
+if (AUDIT_ENABLED) {
+  try { fs.mkdirSync(AUDIT_DIR, { recursive: true }); } catch {}
+}
+
+function appendAudit(entry: Record<string, unknown>): void {
+  if (!AUDIT_ENABLED) return;
+  try {
+    const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD UTC
+    const file = nodepath.join(AUDIT_DIR, `${date}.jsonl`);
+    fs.appendFileSync(file, JSON.stringify(entry) + '\n');
+  } catch (err) {
+    console.error(`[surfagent] audit write failed: ${(err as Error).message}`);
+  }
+}
+
+function redactBody(body: any): any {
+  if (!body || typeof body !== 'object') return body;
+  // Strip noisy / sensitive fields. Keep selectors + tab refs for replay value.
+  const { fields, value, keys, expression, ...rest } = body;
+  const out: any = { ...rest };
+  if (Array.isArray(fields)) out.fields = fields.map((f: any) => ({ selector: f?.selector, valueLen: typeof f?.value === 'string' ? f.value.length : undefined }));
+  if (typeof value === 'string') out.valueLen = value.length;
+  if (typeof keys === 'string') out.keysLen = keys.length;
+  if (typeof expression === 'string') out.expressionLen = expression.length;
+  return out;
+}
 
 interface RequestBody {
   url?: string;
@@ -46,6 +81,27 @@ const server = http.createServer(async (req, res) => {
   const path = url.pathname;
 
   if (req.method === 'OPTIONS') return cors(res);
+
+  // --- audit hook (fires after response sent) ---
+  const reqStart = Date.now();
+  let capturedStatus = 0;
+  let capturedErrorMsg: string | undefined;
+  const originalWriteHead = res.writeHead.bind(res);
+  (res as any).writeHead = (status: number, ...rest: any[]) => {
+    capturedStatus = status;
+    return (originalWriteHead as any)(status, ...rest);
+  };
+  res.on('finish', () => {
+    if (!AUDIT_ENABLED) return;
+    appendAudit({
+      ts: new Date().toISOString(),
+      endpoint: path,
+      method: req.method,
+      status: capturedStatus,
+      durationMs: Date.now() - reqStart,
+      ...(capturedErrorMsg ? { error: capturedErrorMsg } : {}),
+    });
+  });
 
   try {
     // POST /recon — full page reconnaissance
@@ -143,6 +199,29 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, result);
     }
 
+    // POST /screenshot — capture PNG of a tab (base64). Pairs with LLM Vision pipelines.
+    if (path === '/screenshot' && req.method === 'POST') {
+      const body = parseBody(await readBody(req));
+      if (!body.tab) {
+        return json(res, 400, { error: 'Provide "tab" (index, URL/title match, or domain)' });
+      }
+      const tab = await findTab(body.tab, CDP_PORT, CDP_HOST);
+      if (!tab) {
+        return json(res, 404, { error: `Tab not found: ${body.tab}` });
+      }
+      const start = Date.now();
+      const base64 = await takeScreenshot(tab, CDP_PORT, CDP_HOST);
+      return json(res, 200, {
+        ok: true,
+        tab: { id: tab.id, title: tab.title, url: tab.url },
+        format: 'png',
+        mimeType: 'image/png',
+        base64,
+        sizeBytes: Math.ceil((base64.length * 3) / 4),
+        _screenshotMs: Date.now() - start,
+      });
+    }
+
     // POST /focus — bring a tab to front
     if (path === '/focus' && req.method === 'POST') {
       const body = parseBody(await readBody(req));
@@ -209,19 +288,36 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { tabs });
     }
 
+    // GET /audit — replay structured action history (JSONL parsed)
+    // Query: ?date=YYYY-MM-DD (UTC, default today) | ?limit=N (default 100)
+    if (path === '/audit' && req.method === 'GET') {
+      const dateParam = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);
+      const limit = Math.max(1, Math.min(parseInt(url.searchParams.get('limit') || '100', 10) || 100, 5000));
+      const file = nodepath.join(AUDIT_DIR, `${dateParam}.jsonl`);
+      if (!fs.existsSync(file)) {
+        return json(res, 200, { date: dateParam, entries: [], total: 0 });
+      }
+      const lines = fs.readFileSync(file, 'utf-8').trim().split('\n').filter(Boolean);
+      const entries = lines.slice(-limit).map((line) => {
+        try { return JSON.parse(line); } catch { return { _parseError: true, raw: line }; }
+      });
+      return json(res, 200, { date: dateParam, entries, total: lines.length, returned: entries.length });
+    }
+
     // GET /health
     if (path === '/health') {
       try {
         const tabs = await getAllTabs(CDP_PORT, CDP_HOST);
-        return json(res, 200, { status: 'ok', cdpConnected: true, tabCount: tabs.length });
+        return json(res, 200, { status: 'ok', cdpConnected: true, tabCount: tabs.length, auditEnabled: AUDIT_ENABLED, auditDir: AUDIT_ENABLED ? AUDIT_DIR : null });
       } catch {
         return json(res, 503, { status: 'error', cdpConnected: false });
       }
     }
 
-    json(res, 404, { error: 'Not found. Endpoints: POST /recon, /read, /fill, /click, /type, /scroll, /navigate, /eval, /dispatch, /dismiss, /captcha, /focus | GET /tabs, /health' });
+    json(res, 404, { error: 'Not found. Endpoints: POST /recon, /read, /fill, /click, /type, /scroll, /navigate, /eval, /dispatch, /dismiss, /captcha, /focus, /screenshot | GET /tabs, /audit, /health' });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    capturedErrorMsg = message;
     console.error(`[${new Date().toISOString()}] Error:`, message);
 
     if (error instanceof SyntaxError) {
@@ -249,11 +345,14 @@ server.on('error', (err: NodeJS.ErrnoException) => {
 server.listen(PORT, () => {
   console.log(`Browser Recon API running on http://localhost:${PORT}`);
   console.log(`CDP target: ${CDP_HOST}:${CDP_PORT}`);
+  if (AUDIT_ENABLED) console.log(`Audit log: ${AUDIT_DIR} (set AUDIT_LOG=off to disable)`);
   console.log(`\nEndpoints:`);
-  console.log(`  POST /recon   — { url: "..." } or { tab: "0" }`);
-  console.log(`  POST /fill    — { tab, fields: [{ selector, value }], submit? }`);
-  console.log(`  POST /click   — { tab, selector? , text? }`);
-  console.log(`  POST /dispatch— { tab, selector, event, reactDebug? }`);
-  console.log(`  GET  /tabs    — list open Chrome tabs`);
-  console.log(`  GET  /health  — check CDP connection`);
+  console.log(`  POST /recon       — { url: "..." } or { tab: "0" }`);
+  console.log(`  POST /fill        — { tab, fields: [{ selector, value }], submit? }`);
+  console.log(`  POST /click       — { tab, selector? , text? }`);
+  console.log(`  POST /screenshot  — { tab }  → { base64, mimeType, sizeBytes }`);
+  console.log(`  POST /dispatch    — { tab, selector, event, reactDebug? }`);
+  console.log(`  GET  /tabs        — list open Chrome tabs`);
+  console.log(`  GET  /audit       — replay action log (?date=YYYY-MM-DD&limit=N)`);
+  console.log(`  GET  /health      — check CDP connection`);
 });
