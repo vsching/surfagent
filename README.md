@@ -1,4 +1,6 @@
-# surfagent
+# surfagent (trading-essentials fork)
+
+> Fork of [AllAboutAI-YT/surfagent](https://github.com/AllAboutAI-YT/surfagent) with extensions for trading-stack workflows. See [PHASE-1-CHANGES.md](./PHASE-1-CHANGES.md) for what this fork adds.
 
 **Browser automation API for AI agents.** Give any AI agent the ability to see, navigate, and interact with real web pages through Chrome.
 
