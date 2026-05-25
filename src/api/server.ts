@@ -199,23 +199,33 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, result);
     }
 
-    // POST /screenshot — capture PNG of a tab (base64). Pairs with LLM Vision pipelines.
+    // POST /screenshot — capture PNG/JPEG of a tab (base64).
+    // Body: { tab, fullPage?: bool, format?: 'png'|'jpeg', quality?: 0-100 (jpeg only) }
+    // fullPage uses CDP captureBeyondViewport — no live-page resize side-effect.
     if (path === '/screenshot' && req.method === 'POST') {
       const body = parseBody(await readBody(req));
       if (!body.tab) {
-        return json(res, 400, { error: 'Provide "tab" (index, URL/title match, or domain)' });
+        return json(res, 400, { error: 'Provide "tab" (index, URL/title match, or domain). Optional: fullPage, format (png|jpeg), quality (jpeg only).' });
       }
       const tab = await findTab(body.tab, CDP_PORT, CDP_HOST);
       if (!tab) {
         return json(res, 404, { error: `Tab not found: ${body.tab}` });
       }
       const start = Date.now();
-      const base64 = await takeScreenshot(tab, CDP_PORT, CDP_HOST);
+      const format = body.format === 'jpeg' ? 'jpeg' : 'png';
+      const base64 = await takeScreenshot(tab, {
+        port: CDP_PORT,
+        host: CDP_HOST,
+        fullPage: !!body.fullPage,
+        format,
+        quality: typeof body.quality === 'number' ? body.quality : undefined,
+      });
       return json(res, 200, {
         ok: true,
         tab: { id: tab.id, title: tab.title, url: tab.url },
-        format: 'png',
-        mimeType: 'image/png',
+        format,
+        mimeType: format === 'jpeg' ? 'image/jpeg' : 'image/png',
+        fullPage: !!body.fullPage,
         base64,
         sizeBytes: Math.ceil((base64.length * 3) / 4),
         _screenshotMs: Date.now() - start,

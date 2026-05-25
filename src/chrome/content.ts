@@ -116,17 +116,52 @@ export async function searchTabs(query: string, port?: number, host?: string): P
   return results;
 }
 
-export async function takeScreenshot(tab: TabInfo, port?: number, host?: string): Promise<string> {
+export interface ScreenshotOptions {
+  port?: number;
+  host?: string;
+  fullPage?: boolean;       // capture beyond viewport (scrolls + stitches via CDP)
+  format?: 'png' | 'jpeg';  // default png
+  quality?: number;         // jpeg only, 0-100
+}
+
+export async function takeScreenshot(
+  tab: TabInfo,
+  portOrOptions?: number | ScreenshotOptions,
+  host?: string,
+): Promise<string> {
+  // Back-compat: takeScreenshot(tab, port, host) AND takeScreenshot(tab, { fullPage, ... })
+  const opts: ScreenshotOptions = typeof portOrOptions === 'object'
+    ? portOrOptions
+    : { port: portOrOptions, host };
+  const format = opts.format ?? 'png';
+
   let client: CDPClient | null = null;
   try {
-    client = await connectToTab(tab.id, port, host);
+    client = await connectToTab(tab.id, opts.port, opts.host);
 
-    const result = await (client.Page as any).captureScreenshot({
-      format: 'png',
-      fromSurface: true
-    });
+    const params: any = {
+      format,
+      fromSurface: true,
+    };
+    if (format === 'jpeg' && typeof opts.quality === 'number') {
+      params.quality = Math.max(0, Math.min(100, opts.quality));
+    }
 
-    return result.data; // Base64 encoded PNG
+    if (opts.fullPage) {
+      // Full-page = CDP captureBeyondViewport + explicit clip from layout metrics.
+      // Avoids viewport-resize side-effects on the live page.
+      const metrics: any = await (client.Page as any).getLayoutMetrics();
+      const content = metrics.cssContentSize || metrics.contentSize || {};
+      const width = Math.ceil(content.width);
+      const height = Math.ceil(content.height);
+      if (width > 0 && height > 0) {
+        params.captureBeyondViewport = true;
+        params.clip = { x: 0, y: 0, width, height, scale: 1 };
+      }
+    }
+
+    const result = await (client.Page as any).captureScreenshot(params);
+    return result.data; // Base64 encoded
   } finally {
     if (client) {
       await client.close();

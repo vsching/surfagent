@@ -91,15 +91,36 @@ export async function searchTabs(query, port, host) {
     }
     return results;
 }
-export async function takeScreenshot(tab, port, host) {
+export async function takeScreenshot(tab, portOrOptions, host) {
+    // Back-compat: takeScreenshot(tab, port, host) AND takeScreenshot(tab, { fullPage, ... })
+    const opts = typeof portOrOptions === 'object'
+        ? portOrOptions
+        : { port: portOrOptions, host };
+    const format = opts.format ?? 'png';
     let client = null;
     try {
-        client = await connectToTab(tab.id, port, host);
-        const result = await client.Page.captureScreenshot({
-            format: 'png',
-            fromSurface: true
-        });
-        return result.data; // Base64 encoded PNG
+        client = await connectToTab(tab.id, opts.port, opts.host);
+        const params = {
+            format,
+            fromSurface: true,
+        };
+        if (format === 'jpeg' && typeof opts.quality === 'number') {
+            params.quality = Math.max(0, Math.min(100, opts.quality));
+        }
+        if (opts.fullPage) {
+            // Full-page = CDP captureBeyondViewport + explicit clip from layout metrics.
+            // Avoids viewport-resize side-effects on the live page.
+            const metrics = await client.Page.getLayoutMetrics();
+            const content = metrics.cssContentSize || metrics.contentSize || {};
+            const width = Math.ceil(content.width);
+            const height = Math.ceil(content.height);
+            if (width > 0 && height > 0) {
+                params.captureBeyondViewport = true;
+                params.clip = { x: 0, y: 0, width, height, scale: 1 };
+            }
+        }
+        const result = await client.Page.captureScreenshot(params);
+        return result.data; // Base64 encoded
     }
     finally {
         if (client) {
