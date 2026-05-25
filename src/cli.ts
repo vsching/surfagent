@@ -3,12 +3,42 @@
 import { execSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CDP_PORT = parseInt(process.env.CDP_PORT || '9222', 10);
 const API_PORT = parseInt(process.env.API_PORT || '3456', 10);
+
+// --- Phase 1 trading-essentials additions ---
+// Parse `--flag` / `--flag value` style CLI options without pulling in commander
+// here (cli.ts is intentionally stdlib-only at top level).
+function parseFlag(name: string, fallback: string | null = null): string | null {
+  const argv = process.argv.slice(2);
+  const idx = argv.findIndex((a) => a === `--${name}` || a.startsWith(`--${name}=`));
+  if (idx === -1) return fallback;
+  const tok = argv[idx];
+  if (tok.includes('=')) return tok.split('=').slice(1).join('=');
+  const next = argv[idx + 1];
+  if (next && !next.startsWith('--')) return next;
+  return ''; // bare flag present, no value
+}
+function hasFlag(name: string): boolean {
+  return process.argv.slice(2).some((a) => a === `--${name}` || a.startsWith(`--${name}=`));
+}
+
+// Headless: --headless flag OR HEADLESS=true env. Default visible.
+const HEADLESS = hasFlag('headless') || ['1', 'true', 'yes'].includes((process.env.HEADLESS || '').toLowerCase());
+
+// Named profile: --profile NAME OR SURFAGENT_PROFILE env. Default = "default".
+// CHROME_USER_DATA_DIR takes precedence (back-compat with upstream behavior).
+const PROFILE_NAME = parseFlag('profile') || process.env.SURFAGENT_PROFILE || 'default';
+const PROFILE_ROOT = process.env.SURFAGENT_PROFILE_ROOT || path.join(os.homedir(), '.surfagent', 'profiles');
+function resolveUserDataDir(): string {
+  if (process.env.CHROME_USER_DATA_DIR) return process.env.CHROME_USER_DATA_DIR;
+  return path.join(PROFILE_ROOT, PROFILE_NAME);
+}
 
 function log(msg: string) {
   console.log(`[surfagent] ${msg}`);
@@ -69,19 +99,25 @@ function getChromePath(): string | null {
 }
 
 function startChrome(chromePath: string) {
-  const userDataDir = process.env.CHROME_USER_DATA_DIR || '/tmp/surfagent-chrome';
+  const userDataDir = resolveUserDataDir();
+  const isNamedProfile = !process.env.CHROME_USER_DATA_DIR && PROFILE_NAME !== 'default';
+  const isFreshProfile = !fs.existsSync(path.join(userDataDir, 'Default'));
 
-  // Copy cookies from default Chrome profile if available and dir is fresh
-  const os = detectOS();
+  // Copy cookies from system default Chrome profile ONLY for the unnamed
+  // ephemeral profile and only on first run. Named profiles are independent
+  // (the whole point of named profiles is to keep their own session state).
+  const osNow = detectOS();
   try {
     execSync(`mkdir -p "${userDataDir}/Default"`, { stdio: 'ignore' });
 
-    if (os === 'mac') {
-      const defaultProfile = `${process.env.HOME}/Library/Application Support/Google/Chrome/Default`;
-      execSync(`cp "${defaultProfile}/Cookies" "${userDataDir}/Default/" 2>/dev/null || true`, { stdio: 'ignore' });
-    } else if (os === 'linux') {
-      const defaultProfile = `${process.env.HOME}/.config/google-chrome/Default`;
-      execSync(`cp "${defaultProfile}/Cookies" "${userDataDir}/Default/" 2>/dev/null || true`, { stdio: 'ignore' });
+    if (!isNamedProfile && isFreshProfile) {
+      if (osNow === 'mac') {
+        const defaultProfile = `${process.env.HOME}/Library/Application Support/Google/Chrome/Default`;
+        execSync(`cp "${defaultProfile}/Cookies" "${userDataDir}/Default/" 2>/dev/null || true`, { stdio: 'ignore' });
+      } else if (osNow === 'linux') {
+        const defaultProfile = `${process.env.HOME}/.config/google-chrome/Default`;
+        execSync(`cp "${defaultProfile}/Cookies" "${userDataDir}/Default/" 2>/dev/null || true`, { stdio: 'ignore' });
+      }
     }
   } catch {}
 
@@ -97,13 +133,21 @@ function startChrome(chromePath: string) {
     '--password-store=basic',
   ];
 
+  if (HEADLESS) {
+    args.push('--headless=new');
+    // headless new mode still benefits from these for cron stability
+    args.push('--no-first-run');
+    args.push('--no-default-browser-check');
+    args.push('--disable-gpu');
+  }
+
   const chrome = spawn(chromePath, args, {
     detached: true,
     stdio: 'ignore',
   });
 
   chrome.unref();
-  log(`Chrome started (pid ${chrome.pid}) on port ${CDP_PORT}`);
+  log(`Chrome started (pid ${chrome.pid}) on port ${CDP_PORT} — profile=${PROFILE_NAME} headless=${HEADLESS} dir=${userDataDir}`);
 }
 
 async function waitForCDP(maxWait = 10000): Promise<boolean> {
@@ -131,24 +175,40 @@ async function main() {
 
   if (command === 'help' || command === '--help' || command === '-h') {
     console.log(`
-surfagent — Browser Recon API for AI agents
+surfagent — Browser Recon API for AI agents (trading-essentials fork)
 
 Usage:
-  surfagent start     Start Chrome + API server
-  surfagent api       Start API only (Chrome must be running)
-  surfagent chrome    Start Chrome debug session only
-  surfagent health    Check if everything is running
-  surfagent version   Print version number
-  surfagent help      Show this message
+  surfagent start [opts]   Start Chrome + API server
+  surfagent api            Start API only (Chrome must be running)
+  surfagent chrome [opts]  Start Chrome debug session only
+  surfagent health         Check if everything is running
+  surfagent version        Print version number
+  surfagent help           Show this message
+
+Options (for start / chrome):
+  --headless               Launch Chrome headless (cron-friendly, no visible window)
+  --profile NAME           Named persistent profile (default: "default")
+                           Each profile gets ~/.surfagent/profiles/NAME/ —
+                           use for per-broker / per-account session isolation.
 
 Environment variables:
-  CDP_PORT            Chrome debug port (default: 9222)
-  API_PORT            API server port (default: 3456)
-  BROWSER_PATH          Path to any Chromium-based browser (Arc, Brave, Edge, etc.)
-  CHROME_USER_DATA_DIR  Chrome profile directory (default: /tmp/surfagent-chrome)
+  CDP_PORT                 Chrome debug port (default: 9222)
+  API_PORT                 API server port (default: 3456)
+  BROWSER_PATH             Path to any Chromium-based browser (Arc, Brave, Edge, etc.)
+  CHROME_USER_DATA_DIR     Override profile dir entirely (takes precedence over --profile)
+  SURFAGENT_PROFILE        Default profile name (overridden by --profile)
+  SURFAGENT_PROFILE_ROOT   Override profile root (default: ~/.surfagent/profiles)
+  HEADLESS                 Set to 1/true to force headless (same as --headless)
+  AUDIT_LOG                Set to "off" to disable audit JSONL log
+  SURFAGENT_AUDIT_DIR      Override audit log dir (default: ~/.surfagent/audit)
+
+Examples:
+  surfagent start --profile binance --headless
+  surfagent start --profile tradingview
+  HEADLESS=1 surfagent start --profile ttp-paper
 
 After starting, your AI agent can call http://localhost:3456
-Full API docs: https://github.com/AllAboutAI-YT/surfagent#readme
+Phase 1 trading-essentials fork of https://github.com/AllAboutAI-YT/surfagent
 `);
     return;
   }
