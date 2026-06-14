@@ -1,4 +1,25 @@
 import { listTargets } from './connector.js';
+// Thrown when a substring `tab` pattern matches more than one tab. Silent
+// first-match is the #1 cause of an agent driving the wrong tab; we make it a
+// loud, self-correcting error instead so the caller picks an exact id/index.
+export class AmbiguousTabError extends Error {
+    matches;
+    pattern;
+    constructor(pattern, matches) {
+        super(`Ambiguous tab: "${pattern}" matched ${matches.length} tabs. ` +
+            `Re-target by exact index or id. Candidates: ` +
+            matches.map(t => `[${t.index}] ${t.id} ${t.title || t.url}`).join(' | '));
+        this.name = 'AmbiguousTabError';
+        this.matches = matches;
+        this.pattern = pattern;
+    }
+}
+// All tabs whose URL or title contains `pattern` (case-insensitive).
+export function matchTabsBySubstring(tabs, pattern) {
+    const lower = pattern.toLowerCase();
+    return tabs.filter(t => t.url.toLowerCase().includes(lower) ||
+        t.title.toLowerCase().includes(lower));
+}
 export async function getAllTabs(port, host) {
     const targets = await listTargets(port, host);
     return targets.map((target, index) => ({
@@ -15,12 +36,13 @@ export async function findTab(pattern, port, host) {
     if (!isNaN(index) && index >= 0 && index < tabs.length) {
         return tabs[index];
     }
-    // Check if pattern matches tab ID
+    // Check if pattern matches tab ID (exact = unambiguous)
     const byId = tabs.find(tab => tab.id === pattern);
     if (byId)
         return byId;
-    // Check if pattern matches URL or title (case-insensitive)
-    const lowerPattern = pattern.toLowerCase();
-    return tabs.find(tab => tab.url.toLowerCase().includes(lowerPattern) ||
-        tab.title.toLowerCase().includes(lowerPattern)) || null;
+    // Substring match on URL or title. If >1 tab matches, refuse to guess.
+    const matches = matchTabsBySubstring(tabs, pattern);
+    if (matches.length > 1)
+        throw new AmbiguousTabError(pattern, matches);
+    return matches[0] || null;
 }

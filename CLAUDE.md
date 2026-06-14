@@ -76,6 +76,10 @@ curl -X POST localhost:3456/eval -H 'Content-Type: application/json' -d '{"tab":
 # Bring tab to front
 curl -X POST localhost:3456/focus -H 'Content-Type: application/json' -d '{"tab":"0"}'
 
+# Label a tab — durable handle (window.name), survives navigation + daemon restart.
+# Then address that tab by its label in any later call: {"tab":"btc-chart"}
+curl -X POST localhost:3456/label -H 'Content-Type: application/json' -d '{"tab":"0","label":"btc-chart"}'
+
 # Raw key typing — no clear step, for Google Sheets / contenteditable / canvas
 curl -X POST localhost:3456/type -H 'Content-Type: application/json' -d '{"tab":"0","keys":"Hello","submit":"tab"}'
 
@@ -116,10 +120,14 @@ Some Sheets buttons (Add Sheet +, toolbar) only respond to CDP mouse events, not
 
 ### Tab Targeting
 
-All endpoints accept a `tab` field:
+All endpoints accept a `tab` field. Resolution order: index → exact id → label → substring.
 - `"0"` — by index
+- `"ABC123"` — exact tab id (never ambiguous; churns on daemon restart)
+- `"btc-chart"` — a label set via `POST /label` (**most durable, prefer this**; survives reload + restart)
 - `"github"` — partial URL/title match
 - `"cdpn.io"` — matches cross-origin iframes too
+
+If a substring matches >1 tab, the API returns `409 {code:"AMBIGUOUS_TAB", matches:[...]}` instead of guessing — pick a candidate id and retry, or label the tab. For multi-tab / multi-window / multi-account workflows, see **`MULTI-SESSION.md`**.
 
 ---
 

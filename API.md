@@ -261,6 +261,41 @@ Bring a tab to the front in Chrome. Use this when a tab is behind other tabs or 
 
 ---
 
+### POST /label
+
+Assign a durable, human-readable handle to a tab, then address it by that handle
+in every later call. The label is stored as the page's `window.name`, so it
+**survives navigation within the tab and survives a daemon restart / CDP
+reconnect** (where raw tab ids churn). This is the most robust way to target a
+specific tab when several are open — especially several on the same domain.
+
+```json
+{ "tab": "0", "label": "btc-chart" }
+```
+
+Then drive that tab by its label:
+```json
+{ "tab": "btc-chart" }
+```
+
+Clear a label with an empty string:
+```json
+{ "tab": "btc-chart", "label": "" }
+```
+
+**Response:**
+```json
+{ "ok": true, "label": "btc-chart", "tab": { "id": "ABC123", "title": "...", "url": "..." } }
+```
+
+Notes:
+- A label maps to exactly one tab; a tab carries at most one label. Re-labelling moves it.
+- The label dies only when the tab closes.
+- Resolution order for any `tab` field: **index → exact id → label → substring.** Label beats substring, so a labelled tab is never lost to ambiguity.
+- Rare edge: sites that overwrite `window.name` themselves (mostly OAuth popups) can clear the label — fall back to exact `id` there.
+
+---
+
 ### POST /click
 
 Click an element on a page.
@@ -292,7 +327,33 @@ If the element is a link with `target="_blank"`, the click automatically navigat
 { "success": true, "clicked": "A: View docs", "navigated": "https://docs.example.com" }
 ```
 
-**Tab matching:** Same rules as `/recon` — index, URL/title match, or iframe URL match.
+**Tab matching:** Same rules as `/recon` — index, exact id, label, URL/title match, or iframe URL match. If a URL/title substring matches **more than one** tab, the call returns `409 AMBIGUOUS_TAB` (see below) instead of guessing.
+
+---
+
+### Ambiguous tab handling
+
+Any `tab` given as a URL/title substring that matches more than one open tab is
+rejected rather than silently resolved to the first match — the #1 cause of an
+agent driving the wrong tab. The response:
+
+```json
+HTTP 409
+{
+  "ok": false,
+  "code": "AMBIGUOUS_TAB",
+  "pattern": "tradingview",
+  "error": "Ambiguous tab: \"tradingview\" matched 2 tabs. ...",
+  "matches": [
+    { "id": "A1", "index": 0, "title": "TradingView BTC", "url": "..." },
+    { "id": "B2", "index": 1, "title": "TradingView ETH", "url": "..." }
+  ]
+}
+```
+
+Recovery: pick a candidate from `matches` and retry with its exact `id` or
+`index` — or label it once with `/label` and use the label thereafter. Index,
+exact id, and label never trigger this.
 
 ---
 
@@ -423,14 +484,14 @@ The expression is evaluated via `Runtime.evaluate` with `returnByValue: true`, s
 
 ### GET /tabs
 
-List all open Chrome tabs.
+List all open Chrome tabs. The `label` field is the durable handle set via `/label` (`null` if unset).
 
 **Response:**
 ```json
 {
   "tabs": [
-    { "id": "ABC123", "index": 0, "title": "Home", "url": "https://example.com" },
-    { "id": "DEF456", "index": 1, "title": "Dashboard", "url": "https://example.com/dashboard" }
+    { "id": "ABC123", "index": 0, "title": "Home", "url": "https://example.com", "label": "btc-chart" },
+    { "id": "DEF456", "index": 1, "title": "Dashboard", "url": "https://example.com/dashboard", "label": null }
   ]
 }
 ```

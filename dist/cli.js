@@ -6,8 +6,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const CDP_PORT = parseInt(process.env.CDP_PORT || '9222', 10);
-const API_PORT = parseInt(process.env.API_PORT || '3456', 10);
 // --- Phase 1 trading-essentials additions ---
 // Parse `--flag` / `--flag value` style CLI options without pulling in commander
 // here (cli.ts is intentionally stdlib-only at top level).
@@ -27,6 +25,15 @@ function parseFlag(name, fallback = null) {
 function hasFlag(name) {
     return process.argv.slice(2).some((a) => a === `--${name}` || a.startsWith(`--${name}=`));
 }
+// Ports: --port / --cdp-port flags take precedence over env, env over default.
+// Lets you run isolated parallel daemons without exporting env each time:
+//   surfagent start --profile demo --port 3457 --cdp-port 9223
+// The chosen ports are re-exported to the env so the API server (imported
+// later) and Chrome launch both see the same values.
+const API_PORT = parseInt(parseFlag('port') || process.env.API_PORT || '3456', 10);
+const CDP_PORT = parseInt(parseFlag('cdp-port') || process.env.CDP_PORT || '9222', 10);
+process.env.API_PORT = String(API_PORT);
+process.env.CDP_PORT = String(CDP_PORT);
 // Headless: --headless flag OR HEADLESS=true env. Default visible.
 const HEADLESS = hasFlag('headless') || ['1', 'true', 'yes'].includes((process.env.HEADLESS || '').toLowerCase());
 // Named profile: --profile NAME OR SURFAGENT_PROFILE env. Default = "default".
@@ -180,6 +187,10 @@ Options (for start / chrome):
   --profile NAME           Named persistent profile (default: "default")
                            Each profile gets ~/.surfagent/profiles/NAME/ —
                            use for per-broker / per-account session isolation.
+  --port N                 API server port (default: 3456)
+  --cdp-port N             Chrome debug port (default: 9222)
+                           Use both to run isolated parallel daemons, e.g.
+                           a second account on its own ports + profile.
 
 Environment variables:
   CDP_PORT                 Chrome debug port (default: 9222)

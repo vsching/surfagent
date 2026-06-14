@@ -6,7 +6,8 @@ import os from 'node:os';
 import nodepath from 'node:path';
 import { reconUrl, reconTab } from './recon.js';
 import { fillFields, clickElement, scrollPage, navigatePage, evalInTab, focusTab, readPage, captchaInteract, dismissOverlays, typeKeys, dispatchEvent } from './act.js';
-import { getAllTabs, findTab } from '../chrome/tabs.js';
+import { getAllTabs, findTab, AmbiguousTabError } from '../chrome/tabs.js';
+import { setLabel, labelForId } from '../chrome/labels.js';
 import { takeScreenshot } from '../chrome/content.js';
 
 const PORT = parseInt(process.env.API_PORT || '3456', 10);
@@ -242,6 +243,26 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, result);
     }
 
+    // POST /label — assign a durable, human-readable handle to a tab.
+    // Body: { tab, label }. label:"" clears it. Stored as window.name
+    // (survives navigation + CDP reconnect). Drive later calls by the label.
+    if (path === '/label' && req.method === 'POST') {
+      const body = parseBody(await readBody(req));
+      if (!body.tab || typeof body.label !== 'string') {
+        return json(res, 400, { error: 'Provide "tab" (index, id, or match) and "label" (string; "" to clear)' });
+      }
+      const tab = await findTab(body.tab, CDP_PORT, CDP_HOST);
+      if (!tab) {
+        return json(res, 404, { error: `Tab not found: ${body.tab}` });
+      }
+      await setLabel(tab, body.label, CDP_PORT, CDP_HOST);
+      return json(res, 200, {
+        ok: true,
+        label: body.label || null,
+        tab: { id: tab.id, title: tab.title, url: tab.url },
+      });
+    }
+
     // POST /eval — run JavaScript in a tab or iframe
     if (path === '/eval' && req.method === 'POST') {
       const body = parseBody(await readBody(req));
@@ -292,10 +313,10 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, result);
     }
 
-    // GET /tabs — list open tabs
+    // GET /tabs — list open tabs (with any assigned label)
     if (path === '/tabs' && req.method === 'GET') {
       const tabs = await getAllTabs(CDP_PORT, CDP_HOST);
-      return json(res, 200, { tabs });
+      return json(res, 200, { tabs: tabs.map(t => ({ ...t, label: labelForId(t.id) ?? null })) });
     }
 
     // GET /audit — replay structured action history (JSONL parsed)
@@ -324,7 +345,7 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    json(res, 404, { error: 'Not found. Endpoints: POST /recon, /read, /fill, /click, /type, /scroll, /navigate, /eval, /dispatch, /dismiss, /captcha, /focus, /screenshot | GET /tabs, /audit, /health' });
+    json(res, 404, { error: 'Not found. Endpoints: POST /recon, /read, /fill, /click, /type, /scroll, /navigate, /eval, /dispatch, /dismiss, /captcha, /focus, /label, /screenshot | GET /tabs, /audit, /health' });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     capturedErrorMsg = message;
@@ -332,6 +353,15 @@ const server = http.createServer(async (req, res) => {
 
     if (error instanceof SyntaxError) {
       return json(res, 400, { error: 'Invalid JSON: ' + message });
+    }
+    if (error instanceof AmbiguousTabError) {
+      return json(res, 409, {
+        ok: false,
+        code: 'AMBIGUOUS_TAB',
+        error: message,
+        pattern: error.pattern,
+        matches: error.matches,
+      });
     }
     if (message.includes('Tab not found')) {
       return json(res, 404, { error: message });
@@ -362,6 +392,7 @@ server.listen(PORT, () => {
   console.log(`  POST /click       — { tab, selector? , text? }`);
   console.log(`  POST /screenshot  — { tab }  → { base64, mimeType, sizeBytes }`);
   console.log(`  POST /dispatch    — { tab, selector, event, reactDebug? }`);
+  console.log(`  POST /label       — { tab, label }  durable handle (window.name)`);
   console.log(`  GET  /tabs        — list open Chrome tabs`);
   console.log(`  GET  /audit       — replay action log (?date=YYYY-MM-DD&limit=N)`);
   console.log(`  GET  /health      — check CDP connection`);

@@ -1,14 +1,24 @@
 import CDP from 'chrome-remote-interface';
 import { connectToTab, CDPClient } from '../chrome/connector.js';
-import { findTab, getAllTabs, TabInfo } from '../chrome/tabs.js';
+import { findTab, getAllTabs, matchTabsBySubstring, AmbiguousTabError, TabInfo } from '../chrome/tabs.js';
+import { resolveLabel } from '../chrome/labels.js';
 
 async function resolveTab(tabPattern: string, port: number, host: string): Promise<TabInfo> {
   const tabs = await getAllTabs(port, host);
   const index = parseInt(tabPattern, 10);
   let tab = !isNaN(index) && index >= 0 && index < tabs.length ? tabs[index] : null;
   if (!tab) {
-    const lower = tabPattern.toLowerCase();
-    tab = tabs.find(t => t.url.toLowerCase().includes(lower) || t.title.toLowerCase().includes(lower)) || null;
+    // Resolution order: exact id → label (window.name) → substring.
+    tab = tabs.find(t => t.id === tabPattern) || null;
+    if (!tab) {
+      const labelId = await resolveLabel(tabPattern, port, host);
+      if (labelId) tab = tabs.find(t => t.id === labelId) || null;
+    }
+    if (!tab) {
+      const matches = matchTabsBySubstring(tabs, tabPattern);
+      if (matches.length > 1) throw new AmbiguousTabError(tabPattern, matches);
+      tab = matches[0] || null;
+    }
   }
 
   // Fall back to iframe targets

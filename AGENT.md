@@ -88,7 +88,11 @@ curl -X POST localhost:3456/dispatch -H 'Content-Type: application/json' -d '{"t
 # React debug — find event handlers on element and ancestors
 curl -X POST localhost:3456/dispatch -H 'Content-Type: application/json' -d '{"tab":"0","selector":"[role=option]","reactDebug":true}'
 
-# List tabs
+# Label a tab — durable handle (window.name), survives navigation + daemon restart
+curl -X POST localhost:3456/label -H 'Content-Type: application/json' -d '{"tab":"0","label":"btc-chart"}'
+# then drive it forever by the label: {"tab":"btc-chart"}
+
+# List tabs (includes label column)
 curl localhost:3456/tabs
 
 # Health check
@@ -116,10 +120,18 @@ Some Sheets buttons (Add Sheet +, toolbar) only respond to CDP mouse events, not
 
 ### Tab Targeting
 
-All endpoints accept a `tab` field:
+All endpoints accept a `tab` field. Resolution order: index → exact id → label → substring.
 - `"0"` — by index
+- `"<tab id>"` — exact id (from `GET /tabs` or `keepTab`); never ambiguous
+- `"btc-chart"` — a **label** set via `POST /label`; **most durable, prefer this** (survives reload + daemon restart)
 - `"github"` — partial URL/title match
 - `"cdpn.io"` — matches cross-origin iframes too
+
+**Ambiguity guard:** if a substring matches more than one tab, the API returns
+`409 {code:"AMBIGUOUS_TAB", matches:[...]}` instead of guessing. Pick a candidate
+from `matches` and retry with its exact `id`.
+
+For multi-tab / multi-window / multi-account workflows, read **`MULTI-SESSION.md`**.
 
 ---
 
