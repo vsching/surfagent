@@ -77,10 +77,13 @@ curl -X POST localhost:3456/read -H 'Content-Type: application/json' \
 | `/scroll` | POST | Scroll page, returns visible content preview and scroll position |
 | `/navigate` | POST | Go to URL, back, or forward in the same tab |
 | `/eval` | POST | Run JavaScript in any tab or cross-origin iframe |
+| `/dispatch` | POST | Dispatch DOM events (`submit`, `click`, `keydown`…) for React/Vue/Angular SPAs; `reactDebug` to inspect handlers |
 | `/captcha` | POST | Detect and interact with captchas — Arkose, reCAPTCHA, hCaptcha (experimental) |
 | `/type` | POST | Raw CDP key typing without clearing — for Google Sheets, contenteditable, canvas apps |
+| `/label` | POST | Set a durable tab handle (stored as `window.name`) — survives navigation + daemon restart |
+| `/screenshot` | POST | Capture a tab as base64 PNG/JPEG (`fullPage`, `format`, `quality` options) |
 | `/focus` | POST | Bring a tab to the front in Chrome |
-| `/tabs` | GET | List all open Chrome tabs |
+| `/tabs` | GET | List all open Chrome tabs (includes durable `label`) |
 | `/health` | GET | Check if Chrome and API are connected |
 
 Full API reference with request/response schemas: **[API.md](./API.md)**
@@ -103,13 +106,16 @@ Full API reference with request/response schemas: **[API.md](./API.md)**
 
 ## Tab Targeting
 
-Every endpoint accepts a `tab` field:
+Every endpoint accepts a `tab` field. Resolution order: index → exact id → label → substring.
 
 ```json
 {"tab": "0"}           // by index
+{"tab": "btc-chart"}   // a label set via POST /label (most durable — prefer this)
 {"tab": "github"}      // partial match on URL or title
 {"tab": "stripe.com"}  // matches cross-origin iframes too
 ```
+
+Labels are the most durable handle — set one with `POST /label` and it survives reloads and daemon restarts. If a substring matches more than one tab, the API returns `409 {code: "AMBIGUOUS_TAB", matches: [...]}` instead of guessing — pick a candidate id and retry, or label the tab.
 
 ## Commands
 
@@ -120,6 +126,16 @@ surfagent api       # Start API only (Chrome must be running)
 surfagent health    # Check if everything is running
 surfagent help      # Show all options
 ```
+
+**Flags** (apply to `start` / `chrome`):
+
+```bash
+surfagent start --headless              # run Chrome headless (or HEADLESS=true)
+surfagent start --profile demo          # named, isolated profile under ~/.surfagent/profiles
+surfagent start --port 3457 --cdp-port 9223   # custom API + CDP ports for parallel daemons
+```
+
+Named profiles keep their own session state (cookies are only copied from your system Chrome on first run of the unnamed default profile). Combine `--profile` with `--port`/`--cdp-port` to run isolated daemons side by side.
 
 ## Tested On
 
