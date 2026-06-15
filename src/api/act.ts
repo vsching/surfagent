@@ -5,8 +5,11 @@ import { resolveLabel } from '../chrome/labels.js';
 
 async function resolveTab(tabPattern: string, port: number, host: string): Promise<TabInfo> {
   const tabs = await getAllTabs(port, host);
-  const index = parseInt(tabPattern, 10);
-  let tab = !isNaN(index) && index >= 0 && index < tabs.length ? tabs[index] : null;
+  // All-digits only — a tab id starting with a digit must not be parsed as an
+  // index, else it shadows the exact-id branch below and hits the wrong tab.
+  const isIndex = /^\d+$/.test(tabPattern);
+  const index = isIndex ? parseInt(tabPattern, 10) : NaN;
+  let tab = isIndex && index >= 0 && index < tabs.length ? tabs[index] : null;
   if (!tab) {
     // Resolution order: exact id → label (window.name) → substring.
     tab = tabs.find(t => t.id === tabPattern) || null;

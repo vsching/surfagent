@@ -47,10 +47,14 @@ export async function getAllTabs(port?: number, host?: string): Promise<TabInfo[
 export async function findTab(pattern: string, port?: number, host?: string): Promise<TabInfo | null> {
   const tabs = await getAllTabs(port, host);
 
-  // Check if pattern is a number (index)
-  const index = parseInt(pattern, 10);
-  if (!isNaN(index) && index >= 0 && index < tabs.length) {
-    return tabs[index];
+  // Check if pattern is a number (index). All-digits only — a tab id starting
+  // with a digit (e.g. "2ABC…") must NOT be treated as an index, or it shadows
+  // the exact-id branch below and resolves to the wrong tab.
+  if (/^\d+$/.test(pattern)) {
+    const index = parseInt(pattern, 10);
+    if (index >= 0 && index < tabs.length) {
+      return tabs[index];
+    }
   }
 
   // Check if pattern matches tab ID (exact = unambiguous)
