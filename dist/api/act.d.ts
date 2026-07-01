@@ -118,3 +118,12 @@ export declare function dispatchEvent(request: DispatchRequest, options: {
     reactHandlers?: any[];
     error?: string;
 }>;
+/**
+ * Upload one or more local files into a file input via CDP
+ * DOM.setFileInputFiles — no native picker, works headless/automated.
+ * `files` are absolute paths on the machine running the daemon.
+ */
+export declare function uploadFiles(tab: string, selector: string, files: string[], options: {
+    port?: number;
+    host?: string;
+}): Promise<any>;

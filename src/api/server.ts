@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import nodepath from 'node:path';
 import { reconUrl, reconTab } from './recon.js';
-import { fillFields, clickElement, scrollPage, navigatePage, evalInTab, focusTab, readPage, captchaInteract, dismissOverlays, typeKeys, dispatchEvent } from './act.js';
+import { fillFields, clickElement, scrollPage, navigatePage, evalInTab, focusTab, readPage, captchaInteract, dismissOverlays, typeKeys, dispatchEvent, uploadFiles } from './act.js';
 import { getAllTabs, findTab, AmbiguousTabError } from '../chrome/tabs.js';
 import { setLabel, labelForId } from '../chrome/labels.js';
 import { takeScreenshot } from '../chrome/content.js';
@@ -274,6 +274,20 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { result: null, error: result.__error });
       }
       return json(res, 200, { result });
+    }
+
+    // POST /upload — set files on a file input via CDP DOM.setFileInputFiles
+    // (no native picker). Body: { tab, files: string[] (absolute paths), selector? }
+    if (path === '/upload' && req.method === 'POST') {
+      const body = parseBody(await readBody(req));
+      if (!body.tab || !Array.isArray(body.files) || body.files.length === 0) {
+        return json(res, 400, { error: 'Provide "tab" and "files" (array of absolute paths). Optional "selector" (default input[type=file]).' });
+      }
+      const result = await uploadFiles(body.tab, body.selector || 'input[type=file]', body.files, { port: CDP_PORT, host: CDP_HOST });
+      if (result && result.__error) {
+        return json(res, 200, { ok: false, error: result.__error });
+      }
+      return json(res, 200, result);
     }
 
     // POST /type — raw CDP key typing, no clear step (for Google Sheets, contenteditable, etc.)

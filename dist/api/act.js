@@ -825,3 +825,36 @@ export async function dispatchEvent(request, options) {
         throw error;
     }
 }
+/**
+ * Upload one or more local files into a file input via CDP
+ * DOM.setFileInputFiles — no native picker, works headless/automated.
+ * `files` are absolute paths on the machine running the daemon.
+ */
+export async function uploadFiles(tab, selector, files, options) {
+    const port = options.port || 9222;
+    const host = options.host || 'localhost';
+    const resolved = await resolveTab(tab, port, host);
+    const client = await connectToTab(resolved.id, port, host);
+    try {
+        await client.DOM.enable();
+        const evalRes = await client.Runtime.evaluate({
+            expression: `document.querySelector(${JSON.stringify(selector)})`,
+            returnByValue: false,
+        });
+        const objectId = evalRes.result?.objectId;
+        if (!objectId) {
+            await client.close();
+            return { __error: `file input not found for selector: ${selector}` };
+        }
+        await client.DOM.setFileInputFiles({ objectId, files });
+        await client.close();
+        return { ok: true, uploaded: files.length, selector, tab: { id: resolved.id, url: resolved.url } };
+    }
+    catch (error) {
+        try {
+            await client.close();
+        }
+        catch { }
+        return { __error: error?.message || String(error) };
+    }
+}
