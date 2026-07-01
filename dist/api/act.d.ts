@@ -127,3 +127,19 @@ export declare function uploadFiles(tab: string, selector: string, files: string
     port?: number;
     host?: string;
 }): Promise<any>;
+/**
+ * Emulate a device viewport via CDP Emulation.setDeviceMetricsOverride — changes
+ * what the page sees (innerWidth) and triggers CSS media queries, so mobile
+ * layouts actually render. Pass width=0 (or reset:true) to clear the override.
+ * The override persists on the target after this connection closes.
+ */
+export declare function setViewport(tab: string, opts: {
+    width: number;
+    height: number;
+    mobile?: boolean;
+    deviceScaleFactor?: number;
+    reset?: boolean;
+}, options: {
+    port?: number;
+    host?: string;
+}): Promise<any>;

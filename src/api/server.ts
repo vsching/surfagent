@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import nodepath from 'node:path';
 import { reconUrl, reconTab } from './recon.js';
-import { fillFields, clickElement, scrollPage, navigatePage, evalInTab, focusTab, readPage, captchaInteract, dismissOverlays, typeKeys, dispatchEvent, uploadFiles } from './act.js';
+import { fillFields, clickElement, scrollPage, navigatePage, evalInTab, focusTab, readPage, captchaInteract, dismissOverlays, typeKeys, dispatchEvent, uploadFiles, setViewport } from './act.js';
 import { getAllTabs, findTab, AmbiguousTabError } from '../chrome/tabs.js';
 import { setLabel, labelForId } from '../chrome/labels.js';
 import { takeScreenshot } from '../chrome/content.js';
@@ -284,6 +284,26 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { error: 'Provide "tab" and "files" (array of absolute paths). Optional "selector" (default input[type=file]).' });
       }
       const result = await uploadFiles(body.tab, body.selector || 'input[type=file]', body.files, { port: CDP_PORT, host: CDP_HOST });
+      if (result && result.__error) {
+        return json(res, 200, { ok: false, error: result.__error });
+      }
+      return json(res, 200, result);
+    }
+
+    // POST /viewport — emulate a device viewport via CDP (mobile media queries).
+    // Body: { tab, width, height, mobile?, deviceScaleFactor?, reset? }
+    if (path === '/viewport' && req.method === 'POST') {
+      const body = parseBody(await readBody(req));
+      if (!body.tab) {
+        return json(res, 400, { error: 'Provide "tab". Optional: width, height, mobile, deviceScaleFactor, reset (clears override).' });
+      }
+      const result = await setViewport(body.tab, {
+        width: typeof body.width === 'number' ? body.width : 0,
+        height: typeof body.height === 'number' ? body.height : 0,
+        mobile: !!body.mobile,
+        deviceScaleFactor: body.deviceScaleFactor,
+        reset: !!body.reset,
+      }, { port: CDP_PORT, host: CDP_HOST });
       if (result && result.__error) {
         return json(res, 200, { ok: false, error: result.__error });
       }

@@ -858,3 +858,38 @@ export async function uploadFiles(tab, selector, files, options) {
         return { __error: error?.message || String(error) };
     }
 }
+/**
+ * Emulate a device viewport via CDP Emulation.setDeviceMetricsOverride — changes
+ * what the page sees (innerWidth) and triggers CSS media queries, so mobile
+ * layouts actually render. Pass width=0 (or reset:true) to clear the override.
+ * The override persists on the target after this connection closes.
+ */
+export async function setViewport(tab, opts, options) {
+    const port = options.port || 9222;
+    const host = options.host || 'localhost';
+    const resolved = await resolveTab(tab, port, host);
+    const client = await connectToTab(resolved.id, port, host);
+    const emu = client.Emulation;
+    try {
+        if (opts.reset || !opts.width) {
+            await emu.clearDeviceMetricsOverride();
+            await client.close();
+            return { ok: true, reset: true, tab: { id: resolved.id, url: resolved.url } };
+        }
+        await emu.setDeviceMetricsOverride({
+            width: opts.width,
+            height: opts.height,
+            deviceScaleFactor: opts.deviceScaleFactor ?? (opts.mobile ? 3 : 1),
+            mobile: !!opts.mobile,
+        });
+        await client.close();
+        return { ok: true, width: opts.width, height: opts.height, mobile: !!opts.mobile, tab: { id: resolved.id, url: resolved.url } };
+    }
+    catch (error) {
+        try {
+            await client.close();
+        }
+        catch { }
+        return { __error: error?.message || String(error) };
+    }
+}
